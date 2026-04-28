@@ -1,0 +1,27 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environment
+.venv/
+env/
+venv/
+ENV/
+
+# Logs
+*.log
+
+# Large CSV Data Files (Optional: remove these lines if you want to track them)
+*.csv
+*.bak
+*.bak[0-9]
+asset_paths.csv
+asset_paths.bak.csv
+asset_paths.bak2.csv
+asset_paths.bak3.csv
+empty_directory_scan_results.csv
+result.csv
+
+# macOS
+.DS_Store
