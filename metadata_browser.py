@@ -1,3 +1,4 @@
+from __future__ import annotations
 import sys
 import csv
 import os
@@ -10,6 +11,12 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl, QSize, QTimer
 import requests
 import shutil
 import datetime
+import platform
+from dotenv import load_dotenv
+
+# Load environment variables from .env file if it exists
+load_dotenv()
+
 #import ollama
 
 try:
@@ -231,6 +238,46 @@ def validate_asset_name(asset_name: str) -> str:
     return sanitized
 
 
+def normalize_path(path_str: str | Path) -> Path:
+    """Normalize a path string to the current operating system's format.
+    
+    Handles translation between Windows drive letters/backslashes and 
+    Linux/macOS mount points/forward slashes. Specifically maps z:\\ to /Volumes/media/.
+    """
+    if not path_str:
+        return Path()
+    
+    path_s = str(path_str).strip()
+    current_os = platform.system()
+    
+    # Mapping for z:\ drive which seems to be /Volumes/media on this system
+    z_drive_linux = "/Volumes/media"
+    
+    if current_os != "Windows":
+        # Convert Windows to Linux/macOS
+        # Handle drive letter (e.g., z:\Models -> /Volumes/media/Models)
+        if len(path_s) >= 2 and path_s[1] == ":" and path_s[0].lower() == 'z':
+            path_s = z_drive_linux + path_s[2:]
+        
+        # Replace backslashes with forward slashes
+        path_s = path_s.replace("\\", "/")
+        # Remove any double slashes that might have been created
+        while "//" in path_s:
+            path_s = path_s.replace("//", "/")
+    else:
+        # Convert Linux/macOS to Windows
+        if path_s.lower().startswith(z_drive_linux.lower()):
+            path_s = "z:" + path_s[len(z_drive_linux):]
+        
+        # Replace forward slashes with backslashes
+        path_s = path_s.replace("/", "\\")
+        # Remove any double backslashes
+        while "\\\\" in path_s:
+            path_s = path_s.replace("\\\\", "\\")
+            
+    return Path(path_s)
+
+
 def validate_path(path_str: str | Path) -> Path:
     """Validate and convert path to Path object.
     
@@ -246,7 +293,8 @@ def validate_path(path_str: str | Path) -> Path:
     if not isinstance(path_str, (str, Path)):
         raise ValueError("Path must be a string or Path object")
     
-    path = Path(path_str)
+    # Normalize path before checking existence
+    path = normalize_path(path_str)
     if not path.exists():
         raise ValueError(f"Path does not exist: {path}")
     
@@ -445,7 +493,7 @@ class ThumbnailLoaderWorker(QThread):
                 break
             try:
                 # print(f"Loading thumbnail: {path}")
-                pixmap = QPixmap(path)
+                pixmap = QPixmap(str(normalize_path(path)))
                 if not pixmap.isNull():
                     scaled_pixmap = pixmap.scaled(
                         self.icon_size, self.icon_size,
@@ -475,7 +523,14 @@ class EditAssetDialog(QDialog):
         # Fields to edit
         fields = ["Asset Directory", "Asset Path", "Asset Images Path"]
         for field in fields:
-            line_edit = QLineEdit(str(asset_data.get(field, "")))
+            raw_value = asset_data.get(field, "")
+            # Normalize directory and images paths for display
+            if field in ["Asset Directory", "Asset Images Path"]:
+                display_value = str(normalize_path(raw_value))
+            else:
+                display_value = str(raw_value)
+            
+            line_edit = QLineEdit(display_value)
             self.inputs[field] = line_edit
             form_layout.addRow(f"{field}:", line_edit)
         
@@ -491,7 +546,11 @@ class EditAssetDialog(QDialog):
         """Return the updated data."""
         updated_data = self.asset_data.copy()
         for field, line_edit in self.inputs.items():
-            updated_data[field] = line_edit.text()
+            val = line_edit.text()
+            # Normalize path fields before saving
+            if field in ["Asset Directory", "Asset Images Path"]:
+                val = str(normalize_path(val))
+            updated_data[field] = val
         return updated_data
 
 class SaveImagesWorker(QThread):
@@ -772,10 +831,18 @@ class ImageSearchApp(QMainWindow):
         
         # Perform Google Image Search in a worker thread
         search_url = "https://www.googleapis.com/customsearch/v1"
+        cse_id = os.getenv("GOOGLE_CSE_ID")
+        api_key = os.getenv("GOOGLE_API_KEY")
+
+        if not cse_id or not api_key:
+            print("Error: GOOGLE_CSE_ID or GOOGLE_API_KEY not set in .env")
+            self.on_search_error("Google API keys not configured. Please check your .env file.")
+            return
+
         params = {
             "q": sanitized_terms,
-            "cx": "53c963e4202294acb",  # Replace with your Custom Search Engine ID
-            "key": "AIzaSyCBuuNSU7GCFcocwPP_LSl7FSwEiss1QrM",  # Replace with your API key
+            "cx": cse_id,
+            "key": api_key,
             "searchType": "image",
             "num": 10
         }
@@ -1512,8 +1579,10 @@ class AssetBrowser(QMainWindow):
         asset_id = item.data(Qt.ItemDataRole.UserRole)  # Retrieve the Asset ID from the item
         asset = next(asset for asset in self.assets if asset["Asset ID"] == asset_id)
         
-        asset_dir = asset['Asset Directory']
-        self.asset_directory_label.setText(f"<a href='{QUrl.fromLocalFile(asset_dir).toString()}'>{asset_dir}</a>")
+        asset_dir_raw = asset['Asset Directory']
+        asset_dir = normalize_path(asset_dir_raw)
+        # Use local file path for the clickable link, but show raw path for context
+        self.asset_directory_label.setText(f"<a href='{QUrl.fromLocalFile(str(asset_dir)).toString()}'>{asset_dir_raw}</a>")
         self.asset_id_label.setText(f"{asset['Asset ID']}")
         asset_path = asset['Asset Path']
         self.asset_path_label.setText(f"{asset_path}")
@@ -1526,10 +1595,10 @@ class AssetBrowser(QMainWindow):
         try:
             asset_images_path = None
             if asset.get("Asset Images Path"):
-                asset_images_path = Path(asset["Asset Images Path"])
+                asset_images_path = normalize_path(asset["Asset Images Path"])
             
             # Load images from the asset directory recursively, pass expected path for verification
-            self.load_images(Path(asset_dir), asset_images_path)
+            self.load_images(asset_dir, asset_images_path)
 
         except Exception as e:
             print(f"Error accessing path for asset {asset.get('Asset Name', 'Unknown')}: {e}")
@@ -1538,7 +1607,7 @@ class AssetBrowser(QMainWindow):
 
         # Update File Browser
         try:
-             asset_directory = Path(asset["Asset Directory"])
+             asset_directory = normalize_path(asset["Asset Directory"])
              if asset_directory.exists():
                  root_path = str(asset_directory)
                  self.file_model.setRootPath(root_path)
@@ -1600,7 +1669,7 @@ class AssetBrowser(QMainWindow):
             if not (0 <= self.current_image_index < len(self.current_image_files)):
                 self.current_image_index = 0
                 
-            image_file = Path(self.current_image_files[self.current_image_index])
+            image_file = normalize_path(self.current_image_files[self.current_image_index])
             if image_file.exists():
                 pixmap = QPixmap(str(image_file))
                 # Pass full pixmap to ResizableLabel, it will handle scaling
@@ -1765,7 +1834,7 @@ class AssetBrowser(QMainWindow):
         asset_id = self.asset_id_label.text()
         try:
             asset = next(a for a in self.assets if a["Asset ID"] == asset_id)
-            asset_directory = asset["Asset Directory"]
+            asset_directory = normalize_path(asset["Asset Directory"])
         except StopIteration:
             print("Error: Could not find asset ID to edit")
             return
@@ -1918,7 +1987,7 @@ class AssetBrowser(QMainWindow):
         try:
             asset = next(a for a in self.assets if a["Asset ID"] == asset_id)
             if asset.get("Asset Images Path"):
-                p = Path(asset["Asset Images Path"])
+                p = normalize_path(asset["Asset Images Path"])
                 # Create the directory if it doesn't exist
                 if not p.exists():
                      try:
@@ -1945,42 +2014,41 @@ class AssetBrowser(QMainWindow):
             executable = "py" if os.name == "nt" else sys.executable
             
             process = subprocess.Popen(
-                [executable, str(script_path), str(file_path), str(images_path)],
+                [executable, "-u", str(script_path), str(file_path), str(images_path)],
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
                 text=True
             )
             
-            # Wait up to 1 second to see if it crashed immediately due to imports
-            try:
-                # Can't use communicate if we redirected to a file, so we poll instead
-                process.wait(timeout=0.5)
-                if process.returncode != 0:
-                    QMessageBox.critical(self, "STL Preview Error", f"Subprocess exited with code {process.returncode}. Check stl_preview.log for details.")
-            except subprocess.TimeoutExpired:
-                # Still running after a half second, assume it successfully launched the GUI!
-                if not hasattr(self, 'stl_processes'):
-                    self.stl_processes = []
-                self.stl_processes.append(process)
-                
-                # Monitor process completion to refresh images
-                timer = QTimer(self)
-                timer.setInterval(1000)
-                def check_process():
-                    if process.poll() is not None:
-                        timer.stop()
-                        if hasattr(self, '_active_timers') and timer in self._active_timers:
-                            self._active_timers.remove(timer)
-                        # Refresh the current item's display to show new images
-                        current_item = self.asset_list.currentItem()
-                        if current_item:
-                            self.display_asset_details(current_item)
-                
-                if not hasattr(self, '_active_timers'):
-                    self._active_timers = []
-                self._active_timers.append(timer)
-                timer.timeout.connect(check_process)
-                timer.start()
+            # Add to processes list for cleanup
+            if not hasattr(self, 'stl_processes'):
+                self.stl_processes = []
+            self.stl_processes.append(process)
+            
+            # Monitor process completion to refresh images
+            timer = QTimer(self)
+            timer.setInterval(1000)
+            def check_process():
+                if process.poll() is not None:
+                    timer.stop()
+                    if hasattr(self, '_active_timers') and timer in self._active_timers:
+                        self._active_timers.remove(timer)
+                    
+                    if process.returncode != 0:
+                         # Use a single shot to show error so it doesn't block the timer cleanup
+                         QTimer.singleShot(0, lambda: QMessageBox.critical(self, "STL Preview Error", 
+                             f"Subprocess exited with code {process.returncode}. Check stl_preview.log for details."))
+                    
+                    # Refresh the current item's display to show new images
+                    current_item = self.asset_list.currentItem()
+                    if current_item:
+                        self.display_asset_details(current_item)
+            
+            if not hasattr(self, '_active_timers'):
+                self._active_timers = []
+            self._active_timers.append(timer)
+            timer.timeout.connect(check_process)
+            timer.start()
                 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to launch STL previewer: {e}")

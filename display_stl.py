@@ -1,11 +1,26 @@
 import sys
 import os
+import time
 from pathlib import Path
 
+start_time = time.time()
+def log_step(step):
+    print(f"[{time.time() - start_time:.3f}s] {step}", flush=True)
+
+log_step("Starting display_stl.py...")
+log_step(f"Arguments: {sys.argv}")
+os.environ["QT_API"] = "pyqt6"
+
+log_step("Importing pyvista...")
 try:
     import pyvista as pv
+    log_step("PyVista imported successfully.")
     PYVISTA_AVAILABLE = True
 except ImportError:
+    log_step("PyVista import failed.")
+    PYVISTA_AVAILABLE = False
+except Exception as e:
+    log_step(f"An error occurred during PyVista import: {e}")
     PYVISTA_AVAILABLE = False
 
 if __name__ == "__main__":
@@ -20,16 +35,20 @@ if __name__ == "__main__":
     stl_file = Path(sys.argv[1])
     out_dir = Path(sys.argv[2])
     
+    log_step(f"Reading STL file: {stl_file}")
     try:
         mesh = pv.read(stl_file)
+        log_step(f"Mesh loaded: {mesh.n_points} points, {mesh.n_cells} cells")
     except Exception as e:
-        print(f"Failed to load STL: {e}")
+        log_step(f"Failed to load STL: {e}")
         sys.exit(1)
 
+    log_step("Initializing Plotter...")
     # We store rotation states natively
     plotter = pv.Plotter(title=f"STL Preview - {stl_file.name}")
     plotter.window_size = (800, 600)
     plotter.set_background("#16161E", top="#292E42") # A sleek dark mode gradient
+    log_step("Plotter initialized.")
     
     # Lightweight parameters for fast rotation
     fast_kwargs = {
@@ -194,5 +213,6 @@ if __name__ == "__main__":
     # Zoom out appropriately so the model fits comfortably inside the new smaller 400x400 reticle
     plotter.camera.zoom(0.5)
 
+    log_step("Opening window...")
     plotter.show()
     os._exit(0)

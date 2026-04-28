@@ -25,3 +25,6 @@ result.csv
 
 # macOS
 .DS_Store
+
+# Environment Variables
+.env
